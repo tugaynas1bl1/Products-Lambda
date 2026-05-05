@@ -17,43 +17,47 @@ export const handler = async () => {
         await sql.connect(config);
 
         const result = await sql.query(`
-            SELECT * FROM dbo.Products
+            UPDATE dbo.Products
+            SET  
+                IsDiscountActive = CASE  
+                    WHEN DiscountStart IS NOT NULL  
+                     AND DiscountEnd IS NOT NULL  
+                     AND GETDATE() BETWEEN DiscountStart AND DiscountEnd  
+                    THEN 1
+                    ELSE 0
+                END;
+
+            UPDATE dbo.Products
+            SET  
+                discountPrice = CASE  
+                    WHEN IsDiscountActive = 1 THEN Price * 0.7
+                    ELSE Price
+                END;
+
+            SELECT @@ROWCOUNT AS affectedRows;
         `);
 
-        const now = new Date();
+        const affectedRows = result.recordset[0].affectedRows;
 
-        for (let p of result.recordset) {
-            let discountPrice = null;
-
-            const isActive =
-                p.IsDiscountActive &&
-                p.DiscountStart &&
-                p.DiscountEnd &&
-                now >= new Date(p.DiscountStart) &&
-                now <= new Date(p.DiscountEnd);
-
-            if (isActive) {
-                discountPrice = Number(p.Price) * 0.7;
-            }
-
-            await sql.query`
-                UPDATE dbo.Products
-                SET discountPrice = ${discountPrice}
-                WHERE Id = ${p.Id}
-            `;
-
-            console.log(`Updated ID ${p.Id} => ${discountPrice}`);
-        }
+        console.log("Updated rows:", affectedRows);
 
         return {
             statusCode: 200,
-            body: JSON.stringify("Discount updated successfully"),
+            body: JSON.stringify({
+                message: "Discount updated using IsDiscountActive correctly",
+                updated: affectedRows,
+            }),
         };
+
     } catch (err) {
         console.error("ERROR:", err);
+
         return {
             statusCode: 500,
             body: JSON.stringify(err.message),
         };
+
+    } finally {
+        await sql.close();
     }
 };
