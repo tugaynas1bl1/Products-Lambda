@@ -1,81 +1,59 @@
-import {getPool, sql} from "./db.mjs";
+import sql from "mssql";
 
-const ACTIVATE_DISCOUNT_SQL =
-    `
-        UPDATE p
-        SET p.IsDiscountActive = 1 FROM Products p
-        WHERE p.ISDiscountActive = 0
-          AND p.DiscountStart IS NOT NULL
-          AND p.DiscountEnd IS NOT NULL
-          AND p.DiscountStart <= @nowUtc
-          AND p.DiscountEnd >= @nowUtc
-    `
-
-const DEACTIVATE_DISCOUNT_SQL =
-    `
-        UPDATE p
-        SET p.IsDiscountActive = 0 FROM Products p
-        WHERE p.ISDiscountActive = 1
-          AND (p.DiscountStart IS NULL
-           OR p.DiscountEnd IS NULL
-           OR p.DiscountStart
-            > @nowUtc
-           OR p.DiscountEnd
-            < @nowUtc)
-    `
-
-
-async function runUpdate(pool, sqlText, nowUtc){
-    const request = pool.request();
-
-    request.input('nowUtc', sql.DateTime2, nowUtc);
-
-    const result = await request.query(sqlText);
-
-    return result.rowsAffected?.[0] ?? 0;
-}
-
-export const handler = async (event) => {
-    const startedAt = new Date();
-
-    console.info("Discount scheduler started",{
-        event,
-        startedAtUtc: startedAt.toISOString()
-    });
-
-    const pool = await getPool();
+export const handler = async () => {
+    const config = {
+        user: "admin",
+        password: "Products123",
+        server: "database-products.cq5y8g80cilv.us-east-1.rds.amazonaws.com",
+        port: 1433,
+        database: "database-products",
+        options: {
+            encrypt: true,
+            trustServerCertificate: true,
+        },
+    };
 
     try {
-        const activatedCount = await runUpdate(pool, ACTIVATE_DISCOUNT_SQL, startedAt)
-        const deactivatedCount = await runUpdate(pool, DEACTIVATE_DISCOUNT_SQL, startedAt);
-        const message ={
-            status: "OK",
-            startedAtUtc: startedAt.toISOString(),
-            activatedCount,
-            deactivatedCount
-        }
+        await sql.connect(config);
 
-        console.info("Discount scheduler finished",message)
+        const result = await sql.query(`
+            SELECT * FROM dbo.Products
+        `);
+
+        const now = new Date();
+
+        for (let p of result.recordset) {
+            let discountPrice = null;
+
+            const isActive =
+                p.IsDiscountActive &&
+                p.DiscountStart &&
+                p.DiscountEnd &&
+                now >= new Date(p.DiscountStart) &&
+                now <= new Date(p.DiscountEnd);
+
+            if (isActive) {
+                discountPrice = Number(p.Price) * 0.7;
+            }
+
+            await sql.query`
+                UPDATE dbo.Products
+                SET discountPrice = ${discountPrice}
+                WHERE Id = ${p.Id}
+            `;
+
+            console.log(`Updated ID ${p.Id} => ${discountPrice}`);
+        }
 
         return {
             statusCode: 200,
-            body: JSON.stringify(message)
-        }
-    }
-    catch (error) {
-        console.error("Discount scheduler failed",{
-            message: error.message,
-            stack: error.stack,
-            code: error.code,
-            name: error.name
-        })
-
+            body: JSON.stringify("Discount updated successfully"),
+        };
+    } catch (err) {
+        console.error("ERROR:", err);
         return {
             statusCode: 500,
-            body: JSON.stringify({
-                status: "error",
-                errorMessage: error.message
-            })
-        }
+            body: JSON.stringify(err.message),
+        };
     }
-}
+};
